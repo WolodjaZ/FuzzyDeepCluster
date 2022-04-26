@@ -149,6 +149,7 @@ class ResNet(nn.Module):
             eval_mode=False,
     ):
         super(ResNet, self).__init__()
+        self.output_dim = output_dim
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -211,8 +212,10 @@ class ResNet(nn.Module):
 
         # prototype layer
         self.prototypes = None
-        if isinstance(nmb_prototypes, list):
+        if isinstance(nmb_prototypes, list) and len(nmb_prototypes) > 1:
             self.prototypes = MultiPrototypes(output_dim, nmb_prototypes)
+        elif isinstance(nmb_prototypes, list):
+            self.prototypes = nn.Linear(output_dim, nmb_prototypes[0], bias=False)
         elif nmb_prototypes > 0:
             self.prototypes = nn.Linear(output_dim, nmb_prototypes, bias=False)
 
@@ -274,6 +277,15 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
+    def add_prototypes(self, nmb_prototypes):
+        self.prototypes = None
+        if isinstance(nmb_prototypes, list) and len(nmb_prototypes) > 1:
+            self.prototypes = MultiPrototypes(self.output_dim, nmb_prototypes)
+        elif isinstance(nmb_prototypes, list):
+            self.prototypes = nn.Linear(self.output_dim, nmb_prototypes[0], bias=False)
+        else:
+            raise ValueError('Clusters must be a list it can be one element list')
+    
     def forward_backbone(self, x):
         x = self.padding(x)
 
