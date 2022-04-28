@@ -194,3 +194,12 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+def pairwise_distances(embeddings, p=1):
+    distances = torch.zeros((embeddings.shape[0],  embeddings.shape[0])).float()
+    pdist = torch.nn.PairwiseDistance(p=p)
+    for idx in range(embeddings.shape[0]):
+        distances[idx] = pdist(embeddings[idx], embeddings)
+    
+    distances = torch.where(distances > 0.0, distances, 0.0)
+    return distances
