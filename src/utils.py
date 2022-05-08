@@ -196,7 +196,7 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 def pairwise_distances(embeddings, p=1):
-    distances = torch.zeros((embeddings.shape[0],  embeddings.shape[0])).float()
+    distances = torch.zeros((embeddings.shape[0],  embeddings.shape[0])).double()
     pdist = torch.nn.PairwiseDistance(p=p)
     for idx in range(embeddings.shape[0]):
         distances[idx] = pdist(embeddings[idx], embeddings)

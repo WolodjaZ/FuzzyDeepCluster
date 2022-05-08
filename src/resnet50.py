@@ -363,3 +363,15 @@ def resnet50w4(**kwargs):
 
 def resnet50w5(**kwargs):
     return ResNet(Bottleneck, [3, 4, 6, 3], widen=5, **kwargs)
+
+
+if __name__ == "__main__":
+    inputs = [torch.rand((4, 3, 224, 224)),torch.rand((4, 3, 224, 224))]
+    model = resnet50(
+        normalize=True,
+        hidden_mlp=2048,
+        output_dim=128,
+        nmb_prototypes=0,
+    )
+    print(model(inputs).shape)
+    

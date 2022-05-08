@@ -12,6 +12,7 @@ import os
 import shutil
 import time
 from logging import getLogger
+from comet_ml import Experiment
 
 import numpy as np
 import torch
@@ -65,19 +66,25 @@ parser.add_argument("--feat_dim", default=128, type=int,
                     help="feature dimension")
 parser.add_argument("--nmb_prototypes", default=[3000, 3000, 3000], type=int, nargs="+",
                     help="number of prototypes - it can be multihead")
+parser.add_argument("--percent_worst", default=0.1, type=int, nargs="+",
+                    help="Percentage of worst not classes for negative sampling to take into considereation")
+parser.add_argument("--nmb_cmeans_iters", default=30, type=int,
+                    help="Numbers of etaration of cmeans")
 
 #########################
 #### optim parameters ###
 #########################
-parser.add_argument("--epochs", default=100, type=int,
+parser.add_argument("--epochs_con", default=100, type=int,
+                    help="number of total epochs to run")
+parser.add_argument("--epochs", default=40, type=int,
                     help="number of total epochs to run")
 parser.add_argument("--batch_size", default=64, type=int,
                     help="batch size per gpu, i.e. how many unique instances per gpu")
 parser.add_argument("--base_lr", default=4.8, type=float, help="base learning rate")
+parser.add_argument("--base_lr_contr", default=4.8, type=float, help="base learning rate")
 parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
-parser.add_argument("--freeze_prototypes_niters", default=1e10, type=int,
-                    help="freeze the prototypes during this many iterations from the start")
 parser.add_argument("--wd", default=1e-6, type=float, help="weight decay")
+parser.add_argument("--wd_contr", default=1e-6, type=float, help="weight decay")
 parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
 parser.add_argument("--start_warmup", default=0, type=float,
                     help="initial warmup learning rate")
@@ -145,7 +152,7 @@ def main():
         normalize=True,
         hidden_mlp=args.hidden_mlp,
         output_dim=args.feat_dim,
-        nmb_prototypes=None,
+        nmb_prototypes=0,
     )
     # synchronize batch norm layers
     if args.sync_bn == "pytorch":
@@ -169,6 +176,11 @@ def main():
         weight_decay=args.wd_contr,
     )
     optimizer_contr = LARC(optimizer=optimizer_contr, trust_coefficient=0.001, clip=False)
+    warmup_lr_schedule = np.linspace(args.start_warmup, args.base_lr_contr, len(train_loader) * args.warmup_epochs)
+    iters = np.arange(len(train_loader) * (args.epochs - args.warmup_epochs))
+    cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.base_lr_contr - args.final_lr) * (1 + \
+                         math.cos(math.pi * t / (len(train_loader) * (args.epochs_contr - args.warmup_epochs)))) for t in iters])
+    lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
     logger.info("Building contrastive optimizer done.")
 
     # wrap model
@@ -197,45 +209,79 @@ def main():
     else:
         local_memory_embeddings, local_memory_membership = init_memory(train_loader, model)
 
-    cudnn.benchmark = True
-    for epoch in range(start_epoch, args.epochs):
-
-        # train the network for one epoch
-        logger.info("============ Starting epoch %i ... ============" % epoch)
-
-        # set sampler
-        train_loader.sampler.set_epoch(epoch)
-
-        # train the network
-        scores, local_memory_embeddings, local_memory_membership = train_backbone(
-            train_loader,
-            model,
-            optimizer_contr,
-            epoch,
-            local_memory_embeddings,
-            local_memory_membership
-        )
-        training_stats.update(scores)
-
-        # save checkpoints
-        if args.rank == 0:
-            save_dict = {
-                "epoch": epoch + 1,
-                "state_dict": model.state_dict(),
-                "optimizer": optimizer_contr.state_dict(),
-            }
-            torch.save(
-                save_dict,
-                os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
-            )
-            if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
-                shutil.copyfile(
-                    os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
-                    os.path.join(args.dump_checkpoints, "ckp-backbone-" + str(epoch) + ".pth"),
-                )
-        torch.save({"local_memory_embeddings": local_memory_embeddings,
-                    "local_memory_membership": local_memory_membership}, mb_path)
+    # Create an experiment with your api key
+    experiment = Experiment(
+        api_key="",
+        project_name="fuzzydeepcluster",
+        workspace="wolodja",
+    ).add_tag("Backbone training")
     
+    experiment.log_parameters({
+        "nmb_crops": args.nmb_crops,
+        "size_crops": args.size_crops,
+        "min_scale_crops": args.min_scale_crops,
+        "max_scale_crops": args.max_scale_crops,
+        "crops_for_assign": args.crops_for_assign,
+        "feat_dim": args.feat_dim,
+        "percent_worst": args.percent_worst,
+        "epochs": args.epochs_con,
+        "batch_size": args.batch_size,
+        "base_lr": args.base_lr_contr,
+        "weight_decay": args.wd_contr,
+        "final_lr": args.final_lr,
+        "warmup_epochs": args.warmup_epochs,
+        "start_warmup": args.start_warmup,
+        "arch": args.arch,
+        "hidden_mlp": args.hidden_mlp,
+        "workers": args.workers,
+        "sync_bn": args.sync_bn,
+        "nmb_cmeans_iters": args.nmb_cmeans_iters
+    })
+    cudnn.benchmark = True
+    with experiment.train():
+        for epoch in range(start_epoch, args.epochs_con):
+
+            # train the network for one epoch
+            logger.info("============ Starting epoch %i ... ============" % epoch)
+
+            # set sampler
+            train_loader.sampler.set_epoch(epoch)
+
+            # train the network
+            scores, local_memory_embeddings, local_memory_membership = train_backbone(
+                train_loader,
+                model,
+                optimizer_contr,
+                epoch,
+                lr_schedule,
+                local_memory_embeddings,
+                local_memory_membership,
+                args.nmb_cmeans_iters,
+                args.percent_worst
+            )
+            training_stats.update(scores)
+            experiment.log_metric("loss", scores[1], step=scores[0])
+            
+            # save checkpoints
+            if args.rank == 0:
+                save_dict = {
+                    "epoch": epoch + 1,
+                    "state_dict": model.state_dict(),
+                    "optimizer": optimizer_contr.state_dict(),
+                }
+                torch.save(
+                    save_dict,
+                    os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
+                )
+                if epoch % args.checkpoint_freq == 0 or epoch == args.epochs_con - 1:
+                    shutil.copyfile(
+                        os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
+                        os.path.join(args.dump_checkpoints, "ckp-backbone-" + str(epoch) + ".pth"),
+                    )
+            torch.save({"local_memory_embeddings": local_memory_embeddings,
+                        "local_memory_membership": local_memory_membership}, mb_path)
+    
+    #TODO add visualization of embedings with classes
     # add head
     model.add_prototypes(args.nmb_prototypes)
     if args.freeze:
@@ -253,11 +299,6 @@ def main():
         weight_decay=args.wd,
     )
     optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
-    warmup_lr_schedule = np.linspace(args.start_warmup, args.base_lr, len(train_loader) * args.warmup_epochs)
-    iters = np.arange(len(train_loader) * (args.epochs - args.warmup_epochs))
-    cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.base_lr - args.final_lr) * (1 + \
-                         math.cos(math.pi * t / (len(train_loader) * (args.epochs - args.warmup_epochs)))) for t in iters])
-    lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
     logger.info("Building optimizer done.")
     
     # wrap model
@@ -277,50 +318,81 @@ def main():
     )
     start_epoch = to_restore["epoch"]
     
-    for epoch in range(40):
-        # train the network for one epoch
-        logger.info("============ Starting epoch %i ... ============" % epoch)
+    experiment = Experiment(
+        api_key="",
+        project_name="fuzzydeepcluster",
+        workspace="wolodja",
+    ).add_tag("Head training")
+    
+    experiment.log_parameters({
+        "nmb_crops": args.nmb_crops,
+        "size_crops": args.size_crops,
+        "min_scale_crops": args.min_scale_crops,
+        "max_scale_crops": args.max_scale_crops,
+        "crops_for_assign": args.crops_for_assign,
+        "feat_dim": args.feat_dim,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "base_lr": args.base_lr,
+        "weight_decay": args.wd,
+        "arch": args.arch,
+        "hidden_mlp": args.hidden_mlp,
+        "workers": args.workers,
+        "sync_bn": args.sync_bn,
+        "temperature": args.temperature,
+        "nmb_prototypes": args.nmb_prototypes
+    })
+    with experiment.train():
+        for epoch in range(start_epoch, args.epochs):
+            # train the network for one epoch
+            logger.info("============ Starting epoch %i ... ============" % epoch)
 
-        # set sampler
-        train_loader.sampler.set_epoch(epoch)
-        
-         # train the network
-        scores = train_head(
-            train_loader,
-            optimizer,
-            model,
-            epoch,
-            lr_schedule,
-            local_memory_membership
-        )
-        training_stats.update(scores)
-        
-        # save checkpoints
-        if args.rank == 0:
-            save_dict = {
-                "epoch": epoch + 1,
-                "state_dict": model.state_dict()
-            }
-            torch.save(
-                save_dict,
-                os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
+            # set sampler
+            train_loader.sampler.set_epoch(epoch)
+            
+            # train the network
+            scores = train_head(
+                train_loader,
+                optimizer,
+                model,
+                epoch,
+                local_memory_membership
             )
-            if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
-                shutil.copyfile(
+            training_stats.update(scores)
+            experiment.log_metric("loss", scores[1], step=scores[0])
+            
+            # save checkpoints
+            if args.rank == 0:
+                save_dict = {
+                    "epoch": epoch + 1,
+                    "state_dict": model.state_dict()
+                }
+                torch.save(
+                    save_dict,
                     os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
-                    os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
                 )
+                if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
+                    shutil.copyfile(
+                        os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
+                        os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
+                    )
+    #TODO add ewaluation on head for dataset and right classes
 
-def train_backbone(loader, model, optimizer, epoch, local_memory_embeddings, local_memory_membership):
+def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embeddings, local_memory_membership, nmb_cmeans_iters=30, percent_worst=0.2):
     model.train()
     losses = AverageMeter()
 
     triplet_loss = torch.nn.TripletMarginLoss(margin=1.0, p=2.0)
-    local_memory_embeddings = cluster_memory(model, local_memory_embeddings, len(loader.dataset))
+    local_memory_embeddings = cluster_memory(model, local_memory_embeddings, len(loader.dataset), nmb_cmeans_iters)
     logger.info('Clustering for epoch {} done.'.format(epoch))
 
     start_idx = 0
     for it, (idx, inputs) in enumerate(loader):
+        # update learning rate
+        iteration = epoch * len(loader) + it
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = schedule[iteration]
+            
         # ============ multi-res forward passes ... ============
         emb = model(inputs)
         emb = emb.detach()
@@ -328,24 +400,26 @@ def train_backbone(loader, model, optimizer, epoch, local_memory_embeddings, loc
         
         # ============ Triplet loss ... ============
         # order embd based on fuzzy clustering with centroids
-        indices_tuple = [[], [], []]
+        indices_tuple = torch.zeros((3, emb.shape[0], emb.shape[1]), dtype=emb.dtype)
         distances = pairwise_distances(emb)
         for em_idx in range(len(emb)):
            em_class = torch.argmax(local_memory_membership[:, em_idx].mean(dim=0))
-           classes_ind = torch.argmax(local_memory_membership.mean(dim=0).max(dim=1), dim=1)
+           classes_ind = torch.argmax(local_memory_membership.mean(dim=0), dim=1)
            
-           same_classes = (classes_ind == em_class).nonzero()
+           same_classes = (classes_ind == em_class).nonzero().reshape(-1)
            postive_idx = torch.argmax(distances[em_idx, same_classes])
-           not_same_classes = (classes_ind != em_class).nonzero()
-           if local_memory_membership.shape[1] < 5: #TODO check if better solution is there to pick n worst pairs
+           not_same_classes = (classes_ind != em_class).nonzero().reshape(-1)
+           numb = torch.mul(not_same_classes.shape[0], percent_worst)
+           numb = numb.long()
+           if numb < 2:
                lowest_classes_idx = torch.topk(local_memory_membership[:,not_same_classes,em_class].mean(dim=0), 2)[1]
            else:
-               lowest_classes_idx = torch.topk(local_memory_membership[:,not_same_classes,em_class].mean(dim=0), 5)[1]
+               lowest_classes_idx = torch.topk(local_memory_membership[:,not_same_classes,em_class].mean(dim=0), numb)[1]
            negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
            
-           indices_tuple[0].append(emb[em_idx])
-           indices_tuple[1].append(emb[postive_idx])
-           indices_tuple[2].append(emb[negative_idx])
+           indices_tuple[0, em_idx] = emb[em_idx]
+           indices_tuple[1, em_idx] = emb[postive_idx]
+           indices_tuple[2, em_idx] = emb[negative_idx]
            
         loss = triplet_loss(indices_tuple[0], indices_tuple[1], indices_tuple[2])
         loss.backward()
@@ -363,7 +437,7 @@ def train_backbone(loader, model, optimizer, epoch, local_memory_embeddings, loc
             logger.info(f'Train: Epoch [{epoch}/{it}], Step [{idx}/{len(loader)}] loss: {loss.item():.3f}')
     return (epoch, losses.avg), local_memory_embeddings, local_memory_membership
 
-def train_head(loader, optimizer, model, epoch, schedule, local_memory_membership):
+def train_head(loader, optimizer, model, epoch, local_memory_membership):
     model.train()
     losses = AverageMeter()
     
@@ -371,12 +445,7 @@ def train_head(loader, optimizer, model, epoch, schedule, local_memory_membershi
     logger.info('Clustering for epoch {} done.'.format(epoch))
 
     assignments = get_clusters(local_memory_membership, len(loader.dataset))
-    for it, (idx, inputs) in enumerate(loader):
-        # update learning rate
-        iteration = epoch * len(loader) + idx
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = schedule[iteration]
-            
+    for it, (idx, inputs) in enumerate(loader):            
          # ============ multi-res forward passes ... ============
         _, output = model(inputs)
         
