@@ -8,11 +8,16 @@
 import argparse
 from distutils.command.sdist import sdist
 import math
+import umap
 import os
 import shutil
 import time
+import matplotlib as mpl
+mpl.use('Agg')
+
+from matplotlib import pyplot as plt
 from logging import getLogger
-from comet_ml import Experiment
+#from comet_ml import Experiment, OfflineExperiment
 
 import numpy as np
 import torch
@@ -68,9 +73,11 @@ parser.add_argument("--nmb_prototypes", default=[3000, 3000, 3000], type=int, na
                     help="number of prototypes - it can be multihead")
 parser.add_argument("--percent_worst", default=0.1, type=int, nargs="+",
                     help="Percentage of worst not classes for negative sampling to take into considereation")
-parser.add_argument("--nmb_cmeans_iters", default=30, type=int,
+parser.add_argument("--nmb_cmeans_iters", default=20, type=int,
                     help="Numbers of etaration of cmeans")
 
+parser.add_argument("--fuzzy_param", default=2.0, type=float,
+                    help="fuzzy parameter")
 #########################
 #### optim parameters ###
 #########################
@@ -210,45 +217,58 @@ def main():
         local_memory_embeddings, local_memory_membership = init_memory(train_loader, model)
 
     # Create an experiment with your api key
-    experiment = Experiment(
-        api_key="",
-        project_name="fuzzydeepcluster",
-        workspace="wolodja",
-    ).add_tag("Backbone training")
-    
-    experiment.log_parameters({
-        "nmb_crops": args.nmb_crops,
-        "size_crops": args.size_crops,
-        "min_scale_crops": args.min_scale_crops,
-        "max_scale_crops": args.max_scale_crops,
-        "crops_for_assign": args.crops_for_assign,
-        "feat_dim": args.feat_dim,
-        "percent_worst": args.percent_worst,
-        "epochs": args.epochs_con,
-        "batch_size": args.batch_size,
-        "base_lr": args.base_lr_contr,
-        "weight_decay": args.wd_contr,
-        "final_lr": args.final_lr,
-        "warmup_epochs": args.warmup_epochs,
-        "start_warmup": args.start_warmup,
-        "arch": args.arch,
-        "hidden_mlp": args.hidden_mlp,
-        "workers": args.workers,
-        "sync_bn": args.sync_bn,
-        "nmb_cmeans_iters": args.nmb_cmeans_iters
-    })
+#    if args.rank == 0:
+#        experiment = OfflineExperiment(
+#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
+#            project_name="fuzzydeepcluster",
+#            workspace="wolodja",
+#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
+#            auto_output_logging="simple"
+#        )
+#    else:
+#        experiment = OfflineExperiment(
+#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
+#            project_name="fuzzydeepcluster",
+#            workspace="wolodja",
+#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
+#            disabled=True
+#        )
+#
+#    experiment.add_tag("Backbone training")
+#    
+#    experiment.log_parameters({
+#        "nmb_crops": args.nmb_crops,
+#        "size_crops": args.size_crops,
+#        "min_scale_crops": args.min_scale_crops,
+#        "max_scale_crops": args.max_scale_crops,
+#        "crops_for_assign": args.crops_for_assign,
+#        "feat_dim": args.feat_dim,
+#        "percent_worst": args.percent_worst,
+#        "epochs": args.epochs_con,
+#        "batch_size": args.batch_size,
+#        "base_lr": args.base_lr_contr,
+#        "weight_decay": args.wd_contr,
+#        "final_lr": args.final_lr,
+#        "warmup_epochs": args.warmup_epochs,
+#        "start_warmup": args.start_warmup,
+#        "arch": args.arch,
+#        "hidden_mlp": args.hidden_mlp,
+#        "workers": args.workers,
+#        "sync_bn": args.sync_bn,
+#        "nmb_cmeans_iters": args.nmb_cmeans_iters
+#    })
     cudnn.benchmark = True
-    with experiment.train():
-        for epoch in range(start_epoch, args.epochs_con):
+#    with experiment.train():
+    for epoch in range(start_epoch, args.epochs_con):
 
-            # train the network for one epoch
-            logger.info("============ Starting epoch %i ... ============" % epoch)
+        # train the network for one epoch
+        logger.info("============ Starting epoch %i ... ============" % epoch)
 
-            # set sampler
-            train_loader.sampler.set_epoch(epoch)
+        # set sampler
+        train_loader.sampler.set_epoch(epoch)
 
-            # train the network
-            scores, local_memory_embeddings, local_memory_membership = train_backbone(
+        # train the network
+        scores, local_memory_embeddings, local_memory_membership = train_backbone(
                 train_loader,
                 model,
                 optimizer_contr,
@@ -258,27 +278,30 @@ def main():
                 local_memory_membership,
                 args.nmb_cmeans_iters,
                 args.percent_worst
-            )
-            training_stats.update(scores)
-            experiment.log_metric("loss", scores[1], step=scores[0])
+        )
+        training_stats.update(scores)
+        logger.info(f"Loss {scores[1]} for epoch {scores[0]}")
+#       experiment.log_metric("loss", scores[1], step=scores[0])
             
-            # save checkpoints
-            if args.rank == 0:
-                save_dict = {
+        validate_contrastive(local_memory_embeddings, None, epoch, args)
+
+        # save checkpoints
+        if args.rank == 0:
+            save_dict = {
                     "epoch": epoch + 1,
                     "state_dict": model.state_dict(),
                     "optimizer": optimizer_contr.state_dict(),
-                }
-                torch.save(
+            }
+            torch.save(
                     save_dict,
                     os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
-                )
-                if epoch % args.checkpoint_freq == 0 or epoch == args.epochs_con - 1:
-                    shutil.copyfile(
+            )
+            if epoch % args.checkpoint_freq == 0 or epoch == args.epochs_con - 1:
+                shutil.copyfile(
                         os.path.join(args.dump_path, "checkpoint_backbone.pth.tar"),
                         os.path.join(args.dump_checkpoints, "ckp-backbone-" + str(epoch) + ".pth"),
-                    )
-            torch.save({"local_memory_embeddings": local_memory_embeddings,
+                )
+        torch.save({"local_memory_embeddings": local_memory_embeddings,
                         "local_memory_membership": local_memory_membership}, mb_path)
     
     #TODO add visualization of embedings with classes
@@ -318,72 +341,86 @@ def main():
     )
     start_epoch = to_restore["epoch"]
     
-    experiment = Experiment(
-        api_key="",
-        project_name="fuzzydeepcluster",
-        workspace="wolodja",
-    ).add_tag("Head training")
-    
-    experiment.log_parameters({
-        "nmb_crops": args.nmb_crops,
-        "size_crops": args.size_crops,
-        "min_scale_crops": args.min_scale_crops,
-        "max_scale_crops": args.max_scale_crops,
-        "crops_for_assign": args.crops_for_assign,
-        "feat_dim": args.feat_dim,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "base_lr": args.base_lr,
-        "weight_decay": args.wd,
-        "arch": args.arch,
-        "hidden_mlp": args.hidden_mlp,
-        "workers": args.workers,
-        "sync_bn": args.sync_bn,
-        "temperature": args.temperature,
-        "nmb_prototypes": args.nmb_prototypes
-    })
-    with experiment.train():
-        for epoch in range(start_epoch, args.epochs):
-            # train the network for one epoch
-            logger.info("============ Starting epoch %i ... ============" % epoch)
+#    if args.rank == 0:
+#        experiment = OfflineExperiment(
+#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
+#            project_name="fuzzydeepcluster",
+#            workspace="wolodja",
+#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
+#            auto_output_logging="simple"
+#        )
+#    else:
+#        experiment = OfflineExperiment(
+#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
+#            project_name="fuzzydeepcluster",
+#            workspace="wolodja",
+#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
+#            disabled=True
+#        )
+#    
+#    experiment.add_tag("Head training")
+#    
+#    experiment.log_parameters({
+#        "nmb_crops": args.nmb_crops,
+#        "size_crops": args.size_crops,
+#        "min_scale_crops": args.min_scale_crops,
+#        "max_scale_crops": args.max_scale_crops,
+#        "crops_for_assign": args.crops_for_assign,
+#        "feat_dim": args.feat_dim,
+#        "epochs": args.epochs,
+#        "batch_size": args.batch_size,
+#        "base_lr": args.base_lr,
+#        "weight_decay": args.wd,
+#        "arch": args.arch,
+#        "hidden_mlp": args.hidden_mlp,
+#        "workers": args.workers,
+#        "sync_bn": args.sync_bn,
+#        "temperature": args.temperature,
+#        "nmb_prototypes": args.nmb_prototypes
+#    })
+#    with experiment.train():
+    for epoch in range(start_epoch, args.epochs):
+        # train the network for one epoch
+        logger.info("============ Starting epoch %i ... ============" % epoch)
 
-            # set sampler
-            train_loader.sampler.set_epoch(epoch)
+        # set sampler
+        train_loader.sampler.set_epoch(epoch)
             
-            # train the network
-            scores = train_head(
+        # train the network
+        scores = train_head(
                 train_loader,
                 optimizer,
                 model,
                 epoch,
                 local_memory_membership
-            )
-            training_stats.update(scores)
-            experiment.log_metric("loss", scores[1], step=scores[0])
-            
-            # save checkpoints
-            if args.rank == 0:
-                save_dict = {
+        )
+        training_stats.update(scores)
+        #experiment.log_metric("loss", scores[1], step=scores[0])
+        logger.info(f"Loss {scores[1]} for epoch {scores[0]}")
+
+        # save checkpoints
+        if args.rank == 0:
+            save_dict = {
                     "epoch": epoch + 1,
                     "state_dict": model.state_dict()
-                }
-                torch.save(
+            }
+            torch.save(
                     save_dict,
                     os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
-                )
-                if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
-                    shutil.copyfile(
+            )
+            if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
+                shutil.copyfile(
                         os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
                         os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
-                    )
-    #TODO add ewaluation on head for dataset and right classes
+                )
+#TODO add ewaluation on head for dataset and right classes
 
 def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embeddings, local_memory_membership, nmb_cmeans_iters=30, percent_worst=0.2):
     model.train()
     losses = AverageMeter()
 
     triplet_loss = torch.nn.TripletMarginLoss(margin=1.0, p=2.0)
-    local_memory_embeddings = cluster_memory(model, local_memory_embeddings, len(loader.dataset), nmb_cmeans_iters)
+    local_memory_membership = cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_iters)
     logger.info('Clustering for epoch {} done.'.format(epoch))
 
     start_idx = 0
@@ -433,7 +470,7 @@ def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embed
 
         # ============ misc ... ============
         losses.update(loss.item(), inputs[0].size(0))
-        if args.rank ==0 and it % 50 == 0:
+        if args.rank ==0:
             logger.info(f'Train: Epoch [{epoch}/{it}], Step [{idx}/{len(loader)}] loss: {loss.item():.3f}')
     return (epoch, losses.avg), local_memory_embeddings, local_memory_membership
 
@@ -464,7 +501,15 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
             logger.info(f'Train: Epoch [{epoch}/[{it}], Step [{idx}/{len(loader)}] loss: {loss.item():.3f}')
             
     return (epoch, losses.avg)
-    
+
+def validate_contrastive(embedings, experiment, step, args):
+    reducer = umap.UMAP(n_components=2)
+    for i in range(len(args.crops_for_assign)):
+        uembedings = reducer.fit_transform(embedings[i].numpy())
+        plt.scatter(uembedings[:,0], uembedings[:,1], cmap="Spectral")
+        #experiment.log_figure(figure=plt, figure_name=f"UMAP contrastvie for crop={i}", step=step)
+        plt.clf()
+
 def init_memory(dataloader, model):
     size_memory_per_process = len(dataloader) * args.batch_size
     local_memory_embeddings = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.feat_dim).cuda()
@@ -512,21 +557,21 @@ def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_
             for _ in range(nmb_cmeans_iters): #TODO bigger values than kmeans
                 #calculating the cluster center, is done in every iteration
                 centroid_mem_val = local_memory_membership[j]
-                cluster_centers = torch.zeros(K, args.feat_dim).float()
+                cluster_centers = torch.zeros(K, args.feat_dim).float().cuda()
                 for k in range(K):
                     x = centroid_mem_val[:,k]
                     xraised = torch.pow(x, args.fuzzy_param)
-                    denominator = torch.sum(xraised)
+                    denominator = torch.sum(xraised).cuda()
                     temp_num = torch.zeros(x.shape[0], args.feat_dim).float()
                     for i in range(x.shape[0]):
                         data_point = local_memory_embeddings[j,i]
                         temp_num[i] = torch.mul(data_point, xraised[i])
                     
-                    numerator = temp_num.sum(dim=0)
+                    numerator = temp_num.sum(dim=0).cuda()
                     cluster_centers[k] = torch.div(numerator, denominator)
                 
                 # updating the membership values using the cluster centers
-                p = torch.tensor(float(2/(args.fuzzy_param-1)))
+                p = torch.tensor(float(2/(args.fuzzy_param-1))).cuda()
                 for i in range(local_memory_embeddings.shape[1]):
                     x = local_memory_embeddings[j,i]
                     distances = x.sub(cluster_centers)

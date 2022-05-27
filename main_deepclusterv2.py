@@ -31,7 +31,7 @@ from src.utils import (
     AverageMeter,
     init_distributed_mode,
 )
-from src.multicropdataset import MultiCropDataset
+from src.multicropdataset import MultiCropDatasetImageNet, MultiCropDatasetcifar10, MultiCropDatasetcifar100
 import src.resnet50 as resnet_models
 
 logger = getLogger()
@@ -41,6 +41,8 @@ parser = argparse.ArgumentParser(description="Implementation of DeepCluster-v2")
 #########################
 #### data parameters ####
 #########################
+parser.add_argument("--dataset", type=str, default="imagenet",
+                    help="dataset to choose")
 parser.add_argument("--data_path", type=str, default="/path/to/imagenet",
                     help="path to dataset repository")
 parser.add_argument("--nmb_crops", type=int, default=[2], nargs="+",
@@ -119,14 +121,33 @@ def main():
     logger, training_stats = initialize_exp(args, "epoch", "loss")
 
     # build data
-    train_dataset = MultiCropDataset(
-        args.data_path,
-        args.size_crops,
-        args.nmb_crops,
-        args.min_scale_crops,
-        args.max_scale_crops,
-        return_index=True,
-    )
+    if args.dataset == "imagenet":
+        train_dataset = MultiCropDatasetImageNet(
+            args.data_path,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
+    elif args.dataset == "cifar10":
+        train_dataset = MultiCropDatasetcifar10(
+            download=True,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
+    else:
+        train_dataset = MultiCropDatasetcifar100(
+            download=True,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
     sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
