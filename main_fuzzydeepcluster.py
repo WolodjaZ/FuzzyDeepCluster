@@ -34,7 +34,7 @@ from src.utils import (
     init_distributed_mode,
     pairwise_distances
 )
-from src.multicropdataset import MultiCropDataset
+from src.multicropdataset import MultiCropDataset, MultiCropDatasetcifar10, MultiCropDatasetcifat100, MultiCropDatasetImageNet
 import src.resnet50 as resnet_models
 
 logger = getLogger()
@@ -45,6 +45,8 @@ parser = argparse.ArgumentParser(description="Implementation of DeepCluster-v2")
 #### data parameters ####
 #########################
 parser.add_argument("--data_path", type=str, default="/path/to/imagenet",
+                    help="path to dataset repository")
+parser.add_argument("--dataset", type=str, default="imagenet",
                     help="path to dataset repository")
 parser.add_argument("--nmb_crops", type=int, default=[2], nargs="+",
                     help="list of number of crops (example: [2, 6])")
@@ -128,14 +130,33 @@ def main():
     logger, training_stats = initialize_exp(args, "epoch", "loss")
 
     # build data
-    train_dataset = MultiCropDataset(
-        args.data_path,
-        args.size_crops,
-        args.nmb_crops,
-        args.min_scale_crops,
-        args.max_scale_crops,
-        return_index=True,
-    )
+    if args.dataset == "imagenet":    
+        train_dataset = MultiCropDatasetImageNet(
+            args.data_path,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
+    elif args.dataset == "cifar10":
+        train_dataset = MultiCropDatasetcifar10(
+            args.data_path,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
+    elif args.dataset == "cifar100":
+        train_dataset = MultiCropDatasetcifat100(
+            args.data_path,
+            args.size_crops,
+            args.nmb_crops,
+            args.min_scale_crops,
+            args.max_scale_crops,
+            return_index=True,
+        )
     sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -211,7 +232,7 @@ def main():
 
     # Create an experiment with your api key
     experiment = Experiment(
-        api_key="",
+        api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
         project_name="fuzzydeepcluster",
         workspace="wolodja",
     ).add_tag("Backbone training")
@@ -319,7 +340,7 @@ def main():
     start_epoch = to_restore["epoch"]
     
     experiment = Experiment(
-        api_key="",
+        api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
         project_name="fuzzydeepcluster",
         workspace="wolodja",
     ).add_tag("Head training")

@@ -15,6 +15,144 @@ import torchvision.transforms as transforms
 logger = getLogger()
 
 
+class MultiCropDatasetcifar10(datasets.CIFAR10):
+    def __init__(
+        self,
+        data_path,
+        size_crops,
+        nmb_crops,
+        min_scale_crops,
+        max_scale_crops,
+        size_dataset=-1,
+        return_index=False,
+    ):
+        super(MultiCropDataset, self).__init__(data_path)
+        assert len(size_crops) == len(nmb_crops)
+        assert len(min_scale_crops) == len(nmb_crops)
+        assert len(max_scale_crops) == len(nmb_crops)
+        if size_dataset >= 0:
+            self.samples = self.samples[:size_dataset]
+        self.return_index = return_index
+
+        color_transform = [get_color_distortion(), PILRandomGaussianBlur()]
+        mean = [0.485, 0.456, 0.406]
+        std = [0.228, 0.224, 0.225]
+        trans = []
+        for i in range(len(size_crops)):
+            randomresizedcrop = transforms.RandomResizedCrop(
+                size_crops[i],
+                scale=(min_scale_crops[i], max_scale_crops[i]),
+            )
+            trans.extend([transforms.Compose([
+                randomresizedcrop,
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.Compose(color_transform),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)])
+            ] * nmb_crops[i])
+        self.trans = trans
+
+    def __getitem__(self, index):
+        path, _ = self.samples[index]
+        image = self.loader(path)
+        multi_crops = list(map(lambda trans: trans(image), self.trans))
+        if self.return_index:
+            return index, multi_crops
+        return multi_crops
+
+
+class MultiCropDatasetcifat100(datasets.CIFAR100):
+    def __init__(
+        self,
+        data_path,
+        size_crops,
+        nmb_crops,
+        min_scale_crops,
+        max_scale_crops,
+        size_dataset=-1,
+        return_index=False,
+    ):
+        super(MultiCropDataset, self).__init__(data_path)
+        assert len(size_crops) == len(nmb_crops)
+        assert len(min_scale_crops) == len(nmb_crops)
+        assert len(max_scale_crops) == len(nmb_crops)
+        if size_dataset >= 0:
+            self.samples = self.samples[:size_dataset]
+        self.return_index = return_index
+
+        color_transform = [get_color_distortion(), PILRandomGaussianBlur()]
+        mean = [0.485, 0.456, 0.406]
+        std = [0.228, 0.224, 0.225]
+        trans = []
+        for i in range(len(size_crops)):
+            randomresizedcrop = transforms.RandomResizedCrop(
+                size_crops[i],
+                scale=(min_scale_crops[i], max_scale_crops[i]),
+            )
+            trans.extend([transforms.Compose([
+                randomresizedcrop,
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.Compose(color_transform),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)])
+            ] * nmb_crops[i])
+        self.trans = trans
+
+    def __getitem__(self, index):
+        path, _ = self.samples[index]
+        image = self.loader(path)
+        multi_crops = list(map(lambda trans: trans(image), self.trans))
+        if self.return_index:
+            return index, multi_crops
+        return multi_crops
+
+
+class MultiCropDatasetImageNet(datasets.ImageFolder):
+    def __init__(
+        self,
+        data_path,
+        size_crops,
+        nmb_crops,
+        min_scale_crops,
+        max_scale_crops,
+        size_dataset=-1,
+        return_index=False,
+    ):
+        super(MultiCropDataset, self).__init__(data_path)
+        assert len(size_crops) == len(nmb_crops)
+        assert len(min_scale_crops) == len(nmb_crops)
+        assert len(max_scale_crops) == len(nmb_crops)
+        if size_dataset >= 0:
+            self.samples = self.samples[:size_dataset]
+        self.return_index = return_index
+
+        color_transform = [get_color_distortion(), PILRandomGaussianBlur()]
+        mean = [0.485, 0.456, 0.406]
+        std = [0.228, 0.224, 0.225]
+        trans = []
+        for i in range(len(size_crops)):
+            randomresizedcrop = transforms.RandomResizedCrop(
+                size_crops[i],
+                scale=(min_scale_crops[i], max_scale_crops[i]),
+            )
+            trans.extend([transforms.Compose([
+                randomresizedcrop,
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.Compose(color_transform),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)])
+            ] * nmb_crops[i])
+        self.trans = trans
+
+    def __getitem__(self, index):
+        path, _ = self.samples[index]
+        image = self.loader(path)
+        multi_crops = list(map(lambda trans: trans(image), self.trans))
+        if self.return_index:
+            return index, multi_crops
+        return multi_crops
+    
+    
 class MultiCropDataset(datasets.ImageFolder):
     def __init__(
         self,
