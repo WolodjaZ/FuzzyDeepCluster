@@ -26,7 +26,7 @@ class MultiCropDatasetcifar10(datasets.CIFAR10):
         size_dataset=-1,
         return_index=False,
     ):
-        super(MultiCropDataset, self).__init__(data_path)
+        super(MultiCropDatasetcifar10, self).__init__(data_path)
         assert len(size_crops) == len(nmb_crops)
         assert len(min_scale_crops) == len(nmb_crops)
         assert len(max_scale_crops) == len(nmb_crops)
@@ -72,7 +72,7 @@ class MultiCropDatasetcifar100(datasets.CIFAR100):
         size_dataset=-1,
         return_index=False,
     ):
-        super(MultiCropDataset, self).__init__(data_path)
+        super(MultiCropDatasetcifar100, self).__init__(data_path)
         assert len(size_crops) == len(nmb_crops)
         assert len(min_scale_crops) == len(nmb_crops)
         assert len(max_scale_crops) == len(nmb_crops)
@@ -118,7 +118,7 @@ class MultiCropDatasetImageNet(datasets.ImageFolder):
         size_dataset=-1,
         return_index=False,
     ):
-        super(MultiCropDataset, self).__init__(data_path)
+        super(MultiCropDatasetImageNet, self).__init__(data_path)
         assert len(size_crops) == len(nmb_crops)
         assert len(min_scale_crops) == len(nmb_crops)
         assert len(max_scale_crops) == len(nmb_crops)
