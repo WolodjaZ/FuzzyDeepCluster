@@ -7,7 +7,7 @@
 import random
 from logging import getLogger
 
-from PIL import ImageFilter
+from PIL import ImageFilter, Image
 import numpy as np
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
@@ -53,8 +53,8 @@ class MultiCropDatasetcifar10(datasets.CIFAR10):
         self.trans = trans
 
     def __getitem__(self, index):
-        path, _ = self.samples[index]
-        image = self.loader(path)
+        image, _ = self.data[index], self.targets[index]
+        image = Image.fromarray(image)
         multi_crops = list(map(lambda trans: trans(image), self.trans))
         if self.return_index:
             return index, multi_crops
@@ -77,7 +77,8 @@ class MultiCropDatasetcifar100(datasets.CIFAR100):
         assert len(min_scale_crops) == len(nmb_crops)
         assert len(max_scale_crops) == len(nmb_crops)
         if size_dataset >= 0:
-            self.samples = self.samples[:size_dataset]
+            self.data = self.data[:size_dataset]
+            self.targets = self.targets[:size_dataset]
         self.return_index = return_index
 
         color_transform = [get_color_distortion(), PILRandomGaussianBlur()]
@@ -99,8 +100,8 @@ class MultiCropDatasetcifar100(datasets.CIFAR100):
         self.trans = trans
 
     def __getitem__(self, index):
-        path, _ = self.samples[index]
-        image = self.loader(path)
+        image, _ = self.data[index], self.targets[index]
+        image = Image.fromarray(image)
         multi_crops = list(map(lambda trans: trans(image), self.trans))
         if self.return_index:
             return index, multi_crops
