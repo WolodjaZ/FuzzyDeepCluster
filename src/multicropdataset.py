@@ -61,7 +61,7 @@ class MultiCropDatasetcifar10(datasets.CIFAR10):
         return multi_crops
 
 
-class MultiCropDatasetcifat100(datasets.CIFAR100):
+class MultiCropDatasetcifar100(datasets.CIFAR100):
     def __init__(
         self,
         data_path,
