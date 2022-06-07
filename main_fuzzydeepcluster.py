@@ -238,35 +238,6 @@ def main():
         local_memory_embeddings, local_memory_membership = init_memory(train_loader, model)
 
     # Create an experiment with your api key
-<<<<<<< HEAD
-    experiment = Experiment(
-        api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-        project_name="fuzzydeepcluster",
-        workspace="wolodja",
-    ).add_tag("Backbone training")
-    
-    experiment.log_parameters({
-        "nmb_crops": args.nmb_crops,
-        "size_crops": args.size_crops,
-        "min_scale_crops": args.min_scale_crops,
-        "max_scale_crops": args.max_scale_crops,
-        "crops_for_assign": args.crops_for_assign,
-        "feat_dim": args.feat_dim,
-        "percent_worst": args.percent_worst,
-        "epochs": args.epochs_con,
-        "batch_size": args.batch_size,
-        "base_lr": args.base_lr_contr,
-        "weight_decay": args.wd_contr,
-        "final_lr": args.final_lr,
-        "warmup_epochs": args.warmup_epochs,
-        "start_warmup": args.start_warmup,
-        "arch": args.arch,
-        "hidden_mlp": args.hidden_mlp,
-        "workers": args.workers,
-        "sync_bn": args.sync_bn,
-        "nmb_cmeans_iters": args.nmb_cmeans_iters
-    })
-=======
 #    if args.rank == 0:
 #        experiment = OfflineExperiment(
 #            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
@@ -307,7 +278,6 @@ def main():
 #        "sync_bn": args.sync_bn,
 #        "nmb_cmeans_iters": args.nmb_cmeans_iters
 #    })
->>>>>>> 8ad22a12162ce158e3bc4acaee3615d6816e16e2
     cudnn.benchmark = True
 #    with experiment.train():
     for epoch in range(start_epoch, args.epochs_con):
@@ -392,39 +362,6 @@ def main():
     )
     start_epoch = to_restore["epoch"]
     
-<<<<<<< HEAD
-    experiment = Experiment(
-        api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-        project_name="fuzzydeepcluster",
-        workspace="wolodja",
-    ).add_tag("Head training")
-    
-    experiment.log_parameters({
-        "nmb_crops": args.nmb_crops,
-        "size_crops": args.size_crops,
-        "min_scale_crops": args.min_scale_crops,
-        "max_scale_crops": args.max_scale_crops,
-        "crops_for_assign": args.crops_for_assign,
-        "feat_dim": args.feat_dim,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "base_lr": args.base_lr,
-        "weight_decay": args.wd,
-        "arch": args.arch,
-        "hidden_mlp": args.hidden_mlp,
-        "workers": args.workers,
-        "sync_bn": args.sync_bn,
-        "temperature": args.temperature,
-        "nmb_prototypes": args.nmb_prototypes
-    })
-    with experiment.train():
-        for epoch in range(start_epoch, args.epochs):
-            # train the network for one epoch
-            logger.info("============ Starting epoch %i ... ============" % epoch)
-
-            # set sampler
-            train_loader.sampler.set_epoch(epoch)
-=======
 #    if args.rank == 0:
 #        experiment = OfflineExperiment(
 #            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
@@ -469,7 +406,6 @@ def main():
 
         # set sampler
         train_loader.sampler.set_epoch(epoch)
->>>>>>> 8ad22a12162ce158e3bc4acaee3615d6816e16e2
             
         # train the network
         scores = train_head(
