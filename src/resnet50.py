@@ -285,7 +285,7 @@ class ResNet(nn.Module):
             self.prototypes = nn.Linear(self.output_dim, nmb_prototypes[0], bias=False)
         else:
             raise ValueError('Clusters must be a list it can be one element list')
-    
+
     def forward_backbone(self, x):
         x = self.padding(x)
 

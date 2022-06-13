@@ -75,11 +75,13 @@ parser.add_argument("--nmb_prototypes", default=[3000, 3000, 3000], type=int, na
                     help="number of prototypes - it can be multihead")
 parser.add_argument("--percent_worst", default=0.1, type=int, nargs="+",
                     help="Percentage of worst not classes for negative sampling to take into considereation")
-parser.add_argument("--nmb_cmeans_iters", default=20, type=int,
+parser.add_argument("--nmb_cmeans_iters", default=2, type=int,
                     help="Numbers of etaration of cmeans")
 
 parser.add_argument("--fuzzy_param", default=2.0, type=float,
                     help="fuzzy parameter")
+parser.add_argument("--freeze", default=True, type=bool,
+                    help="Freeze network after triple learning")
 #########################
 #### optim parameters ###
 #########################
@@ -280,10 +282,11 @@ def main():
 #    })
     cudnn.benchmark = True
 #    with experiment.train():
+    print(local_memory_membership.shape)
     for epoch in range(start_epoch, args.epochs_con):
 
         # train the network for one epoch
-        logger.info("============ Starting epoch %i ... ============" % epoch)
+        logger.info("============ Starting backbone train epoch %i ... ============" % epoch)
 
         # set sampler
         train_loader.sampler.set_epoch(epoch)
@@ -301,7 +304,7 @@ def main():
                 args.percent_worst
         )
         training_stats.update(scores)
-        logger.info(f"Loss {scores[1]} for epoch {scores[0]}")
+        logger.info(f"Loss avg {scores[1]} for epoch {scores[0]}")
 #       experiment.log_metric("loss", scores[1], step=scores[0])
             
         validate_contrastive(local_memory_embeddings, None, epoch, args)
@@ -327,14 +330,12 @@ def main():
     
     #TODO add visualization of embedings with classes
     # add head
-    model.add_prototypes(args.nmb_prototypes)
+    model.module.add_prototypes(args.nmb_prototypes)
     if args.freeze:
-        for param in model.parameters():
-            param.requires_grad = False
-        
-        model.prototypes.weight.requires_grad = True
-        model.prototypes.bias.requires_grad = True
-    
+        for name, p in model.named_parameters():
+            if "prototypes" not in name:
+                p.requires_grad = False
+
     # build optimizer
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -347,7 +348,7 @@ def main():
     
     # wrap model
     model = nn.parallel.DistributedDataParallel(
-        model,
+        model.module.cuda(),
         device_ids=[args.gpu_to_work_on],
         find_unused_parameters=True,
     )
@@ -400,9 +401,10 @@ def main():
 #        "nmb_prototypes": args.nmb_prototypes
 #    })
 #    with experiment.train():
+    print(local_memory_membership.shape)
     for epoch in range(start_epoch, args.epochs):
         # train the network for one epoch
-        logger.info("============ Starting epoch %i ... ============" % epoch)
+        logger.info("============ Starting head train epoch %i ... ============" % epoch)
 
         # set sampler
         train_loader.sampler.set_epoch(epoch)
@@ -445,6 +447,7 @@ def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embed
     logger.info('Clustering for epoch {} done.'.format(epoch))
 
     start_idx = 0
+    print(local_memory_membership)
     for it, (idx, inputs) in enumerate(loader):
         # update learning rate
         iteration = epoch * len(loader) + it
@@ -453,46 +456,57 @@ def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embed
             
         # ============ multi-res forward passes ... ============
         emb = model(inputs)
-        emb = emb.detach()
-        bs = inputs[0].size(0)
-        
+        bs = int(emb.shape[0] / len(args.crops_for_assign))
+
         # ============ Triplet loss ... ============
         # order embd based on fuzzy clustering with centroids
-        indices_tuple = torch.zeros((3, emb.shape[0], emb.shape[1]), dtype=emb.dtype)
-        distances = pairwise_distances(emb)
-        for em_idx in range(len(emb)):
-           em_class = torch.argmax(local_memory_membership[:, em_idx].mean(dim=0))
-           classes_ind = torch.argmax(local_memory_membership.mean(dim=0), dim=1)
-           
-           same_classes = (classes_ind == em_class).nonzero().reshape(-1)
-           postive_idx = torch.argmax(distances[em_idx, same_classes])
-           not_same_classes = (classes_ind != em_class).nonzero().reshape(-1)
-           numb = torch.mul(not_same_classes.shape[0], percent_worst)
-           numb = numb.long()
-           if numb < 2:
-               lowest_classes_idx = torch.topk(local_memory_membership[:,not_same_classes,em_class].mean(dim=0), 2)[1]
-           else:
-               lowest_classes_idx = torch.topk(local_memory_membership[:,not_same_classes,em_class].mean(dim=0), numb)[1]
-           negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
-           
-           indices_tuple[0, em_idx] = emb[em_idx]
-           indices_tuple[1, em_idx] = emb[postive_idx]
-           indices_tuple[2, em_idx] = emb[negative_idx]
-           
-        loss = triplet_loss(indices_tuple[0], indices_tuple[1], indices_tuple[2])
-        loss.backward()
-        optimizer.step()
-
-        # ============ update memory banks ... ============
+        loss = 0
         for i, crop_idx in enumerate(args.crops_for_assign):
-            local_memory_embeddings[i][start_idx : start_idx + bs] = \
-                emb[crop_idx * bs : (crop_idx + 1) * bs]
+            emb_crop = emb[crop_idx * bs : (crop_idx + 1) * bs]
+            distances = pairwise_distances(emb_crop)
+            indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1]))
+            keep = []
+            for em_idx in range(len(emb_crop)):
+                em_class = torch.argmax(local_memory_membership[i, start_idx+em_idx])
+                classes_ind = torch.argmax(local_memory_membership[i, start_idx : start_idx + emb_crop.shape[0]], dim=1)
+
+                same_classes = (classes_ind == em_class).nonzero().reshape(-1)
+                postive_idx = torch.argmax(distances[em_idx, same_classes])
+                not_same_classes = (classes_ind != em_class).nonzero().reshape(-1)
+                numb = torch.mul(not_same_classes.shape[0], percent_worst)
+                numb = numb.long()
+                if same_classes.shape[0] == 0 or not_same_classes.shape[0] == 0:
+                    logger.info(f"For {crop_idx * bs + em_idx} there are {same_classes.shape[0]} same classes and {not_same_classes.shape[0]} not same classes")
+                    continue
+                elif not_same_classes.shape[0] < 2:
+                    lowest_classes_idx = not_same_classes
+                elif numb < 2:
+                    lowest_classes_idx = torch.topk(local_memory_membership[i,not_same_classes,em_class], 2)[1]
+                else:
+                    lowest_classes_idx = torch.topk(local_memory_membership[i,not_same_classes,em_class], numb)[1]
+                negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
+                
+                keep.append(em_idx)
+                indices_tuple[0, em_idx] = emb_crop[em_idx]
+                indices_tuple[1, em_idx] = emb_crop[postive_idx]
+                indices_tuple[2, em_idx] = emb_crop[negative_idx]
+            loss += triplet_loss(indices_tuple[0,keep], indices_tuple[1,keep], indices_tuple[2,keep])
+            
+            # ============ update memory banks ... ============
+            embe = emb.detach()
+            local_memory_embeddings[i, start_idx : start_idx + bs] = embe[crop_idx * bs : (crop_idx + 1) * bs]
+        
+        loss /= len(args.crops_for_assign)
+        if loss != 0 and not torch.isnan(loss).any():
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         start_idx += bs
 
         # ============ misc ... ============
         losses.update(loss.item(), inputs[0].size(0))
-        if args.rank ==0:
-            logger.info(f'Train: Epoch [{epoch}/{it}], Step [{idx}/{len(loader)}] loss: {loss.item():.3f}')
+        if args.rank ==0 and it % 50 == 0:
+            logger.info(f'Train: Epoch [{epoch}], Step [{it}/{len(loader)}], loss: {loss.item():.3f}, lr {optimizer.optim.param_groups[0]["lr"]:.4f}')
     return (epoch, losses.avg), local_memory_embeddings, local_memory_membership
 
 def train_head(loader, optimizer, model, epoch, local_memory_membership):
@@ -500,41 +514,47 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
     losses = AverageMeter()
     
     cross_entropy = nn.CrossEntropyLoss(ignore_index=-100)
-    logger.info('Clustering for epoch {} done.'.format(epoch))
-
-    assignments = get_clusters(local_memory_membership, len(loader.dataset))
+    
+    # ============ get clusters ... ============
+    assignments = torch.argmax(local_memory_membership, dim=2).detach().cpu()
+    print(assignments.shape, local_memory_membership.shape)
+    start_idx = 0
     for it, (idx, inputs) in enumerate(loader):            
          # ============ multi-res forward passes ... ============
-        _, output = model(inputs)
-        
+        optimizer.zero_grad()
+        emb, output = model(inputs)
+        bs = int(emb.shape[0] / len(args.crops_for_assign))
+
         # ============ deepcluster-v2 loss ... ============
         loss = 0
         for h in range(len(args.nmb_prototypes)):
             scores = output[h] / args.temperature
-            targets = assignments[h][idx].repeat(sum(args.nmb_crops)).cuda(non_blocking=True)
+            targets = assignments[h,idx].repeat(sum(args.nmb_crops)).cuda()#(non_blocking=True)
             loss += cross_entropy(scores, targets)
         loss /= len(args.nmb_prototypes)
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        start_idx += bs
         
         losses.update(loss.item(), inputs[0].size(0))
-        if args.rank ==0:
-            logger.info(f'Train: Epoch [{epoch}/[{it}], Step [{idx}/{len(loader)}] loss: {loss.item():.3f}')
+        if args.rank ==0 and it % 50 == 0:
+            logger.info(f'Train: Epoch [{epoch}], Step [{it}/{len(loader)}], loss: {loss.item():.3f}')
             
     return (epoch, losses.avg)
 
 def validate_contrastive(embedings, experiment, step, args):
     reducer = umap.UMAP(n_components=2)
     for i in range(len(args.crops_for_assign)):
-        uembedings = reducer.fit_transform(embedings[i].numpy())
+        uembedings = reducer.fit_transform(embedings[i].detach().cpu().numpy())
         plt.scatter(uembedings[:,0], uembedings[:,1], cmap="Spectral")
         #experiment.log_figure(figure=plt, figure_name=f"UMAP contrastvie for crop={i}", step=step)
         plt.clf()
 
 def init_memory(dataloader, model):
-    size_memory_per_process = len(dataloader) * args.batch_size
+    size_memory_per_process = len(dataloader.dataset)
     local_memory_embeddings = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.feat_dim).cuda()
-    local_memory_membership = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.nmb_prototypes[0]).float().cuda()
+    local_memory_membership = torch.zeros(len(args.nmb_prototypes), size_memory_per_process, args.nmb_prototypes[0]).float().cuda()
     start_idx = 0
     with torch.no_grad():
         logger.info('Start initializing the memory banks')
@@ -573,9 +593,10 @@ def init_memory(dataloader, model):
 
 def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_iters=100):
     j = 0
+    #print(local_memory_embeddings)
     with torch.no_grad():
         for i_K, K in enumerate(args.nmb_prototypes):
-            for _ in range(nmb_cmeans_iters): #TODO bigger values than kmeans
+            for z in range(nmb_cmeans_iters): #TODO bigger values than kmeans
                 #calculating the cluster center, is done in every iteration
                 centroid_mem_val = local_memory_membership[j]
                 cluster_centers = torch.zeros(K, args.feat_dim).float().cuda()
@@ -590,6 +611,7 @@ def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_
                     
                     numerator = temp_num.sum(dim=0).cuda()
                     cluster_centers[k] = torch.div(numerator, denominator)
+                #print(f"Clusters {i_K} {z} {cluster_centers}")
                 
                 # updating the membership values using the cluster centers
                 p = torch.tensor(float(2/(args.fuzzy_param-1))).cuda()
@@ -601,14 +623,14 @@ def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_
                         den = torch.pow(torch.div(distances[g],distances), p)
                         den_sum = torch.sum(den)
                         local_memory_membership[j,i,g] = torch.div(torch.tensor(1.), den_sum)
-
+                #print(f"Memberhsip {i_K} {z} {local_memory_membership[j,i]}")
             # next memory bank to use
             j = (j + 1) % len(args.crops_for_assign)
         
         return local_memory_membership
 
-def get_clusters(local_memory_membership, size_dataset):
-    assignments = -100 * torch.ones(len(args.nmb_prototypes), size_dataset).long()
+def get_clusters(local_memory_membership):
+    assignments = -100 * torch.ones(len(args.nmb_prototypes), local_memory_membership.shape[1], local_memory_membership.shape[2]).long()
     j = 0
     for i_K in range(len(args.nmb_prototypes)):
         assignments[i_K] = torch.argmax(local_memory_membership[j, :], dim=1)
