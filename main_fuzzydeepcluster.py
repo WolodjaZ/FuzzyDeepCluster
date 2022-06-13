@@ -588,7 +588,7 @@ def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_
                     for g in range(K):
                         den = torch.pow(torch.div(distances[g],distances), p)
                         den_sum = torch.sum(den)
-                        local_memory_membership[j,i,i_K,g] = torch.div(torch.tensor(1.), den_sum)
+                        local_memory_membership[j,i,g] = torch.div(torch.tensor(1.), den_sum)
                 #print(f"Memberhsip {i_K} {z} {local_memory_membership[j,i]}")
             # next memory bank to use
             j = (j + 1) % len(args.crops_for_assign)
@@ -601,11 +601,12 @@ def triplet_each(local_memory_membership, local_memory_embeddings, emb, start_id
     for i, crop_idx in enumerate(args.crops_for_assign):
         emb_crop = emb[crop_idx * bs : (crop_idx + 1) * bs]
         distances = pairwise_distances(emb_crop)
-        indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1]))
-        classes_ind = torch.argmax(local_memory_membership[i, start_idx : start_idx + emb_crop.shape[0]], dim=1)
+        indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1])
+        lmemory_membership = local_memory_membership[i, start_idx : start_idx + emb_crop.shape[0]]
+        classes_ind = torch.argmax(lmemory_membership, dim=1)
         keep = []
         for em_idx in range(len(emb_crop)):
-            em_class = classes_ind[i, em_idx]
+            em_class = classes_ind[em_idx]
             same_classes = (classes_ind == em_class).nonzero().reshape(-1)
             postive_idx = torch.argmax(distances[em_idx, same_classes])
             not_same_classes = (classes_ind != em_class).nonzero().reshape(-1)
@@ -617,9 +618,9 @@ def triplet_each(local_memory_membership, local_memory_embeddings, emb, start_id
             elif not_same_classes.shape[0] < 2:
                 lowest_classes_idx = not_same_classes
             elif numb < 2:
-                lowest_classes_idx = torch.topk(local_memory_membership[i,not_same_classes,em_class], 2)[1]
+                lowest_classes_idx = torch.topk(lmemory_membership[not_same_classes,em_class], 2)[1]
             else:
-                lowest_classes_idx = torch.topk(local_memory_membership[i,not_same_classes,em_class], numb)[1]
+                lowest_classes_idx = torch.topk(lmemory_membership[not_same_classes,em_class], numb)[1]
             negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
                 
             keep.append(em_idx)
