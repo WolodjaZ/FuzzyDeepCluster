@@ -13,6 +13,7 @@ import time
 from logging import getLogger
 
 import numpy as np
+import wandb
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -221,6 +222,33 @@ def main():
     else:
         local_memory_index, local_memory_embeddings = init_memory(train_loader, model)
 
+    if args.rank == 0:
+        wandb.login(key="")
+        wandb.init(
+            project="my-test-project", 
+            name=f"training_original", 
+            config={
+                "nmb_crops": args.nmb_crops,
+                "size_crops": args.size_crops,
+                "min_scale_crops": args.min_scale_crops,
+                "max_scale_crops": args.max_scale_crops,
+                "crops_for_assign": args.crops_for_assign,
+                "feat_dim": args.feat_dim,
+                "percent_worst": args.percent_worst,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "base_lr": args.base_lr_contr,
+                "weight_decay": args.wd_contr,
+                "final_lr": args.final_lr,
+                "warmup_epochs": args.warmup_epochs,
+                "start_warmup": args.start_warmup,
+                "arch": args.arch,
+                "hidden_mlp": args.hidden_mlp,
+                "workers": args.workers,
+                "sync_bn": args.sync_bn,
+            })
+        wandb.watch(model, log="all")
+        
     cudnn.benchmark = True
     for epoch in range(start_epoch, args.epochs):
 
@@ -244,6 +272,10 @@ def main():
 
         # save checkpoints
         if args.rank == 0:
+            wandb.log({
+                "loss": scores[1],
+                "learning_rate": optimizer.optim.param_groups[0]["lr"],
+            })
             save_dict = {
                 "epoch": epoch + 1,
                 "state_dict": model.state_dict(),

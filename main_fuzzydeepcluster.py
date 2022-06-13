@@ -12,13 +12,9 @@ import umap
 import os
 import shutil
 import time
-import matplotlib as mpl
-mpl.use('Agg')
 
-from matplotlib import pyplot as plt
 from logging import getLogger
-#from comet_ml import Experiment, OfflineExperiment
-
+import wandb
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,6 +25,7 @@ import torch.optim
 import apex
 from apex.parallel.LARC import LARC
 from scipy.sparse import csr_matrix
+import plotly.graph_objects as go
 
 from src.utils import (
     bool_flag,
@@ -242,48 +239,37 @@ def main():
         local_memory_embeddings, local_memory_membership = init_memory(train_loader, model)
 
     # Create an experiment with your api key
-#    if args.rank == 0:
-#        experiment = OfflineExperiment(
-#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-#            project_name="fuzzydeepcluster",
-#            workspace="wolodja",
-#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
-#            auto_output_logging="simple"
-#        )
-#    else:
-#        experiment = OfflineExperiment(
-#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-#            project_name="fuzzydeepcluster",
-#            workspace="wolodja",
-#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
-#            disabled=True
-#        )
-#
-#    experiment.add_tag("Backbone training")
-#    
-#    experiment.log_parameters({
-#        "nmb_crops": args.nmb_crops,
-#        "size_crops": args.size_crops,
-#        "min_scale_crops": args.min_scale_crops,
-#        "max_scale_crops": args.max_scale_crops,
-#        "crops_for_assign": args.crops_for_assign,
-#        "feat_dim": args.feat_dim,
-#        "percent_worst": args.percent_worst,
-#        "epochs": args.epochs_con,
-#        "batch_size": args.batch_size,
-#        "base_lr": args.base_lr_contr,
-#        "weight_decay": args.wd_contr,
-#        "final_lr": args.final_lr,
-#        "warmup_epochs": args.warmup_epochs,
-#        "start_warmup": args.start_warmup,
-#        "arch": args.arch,
-#        "hidden_mlp": args.hidden_mlp,
-#        "workers": args.workers,
-#        "sync_bn": args.sync_bn,
-#        "nmb_cmeans_iters": args.nmb_cmeans_iters
-#    })
+    if args.rank == 0:
+        wandb.login(key="")
+        wandb.init(
+            project="my-test-project",
+            name=f"backbone_training_prosed", 
+            config={
+                "nmb_crops": args.nmb_crops,
+                "size_crops": args.size_crops,
+                "min_scale_crops": args.min_scale_crops,
+                "max_scale_crops": args.max_scale_crops,
+                "crops_for_assign": args.crops_for_assign,
+                "feat_dim": args.feat_dim,
+                "percent_worst": args.percent_worst,
+                "epochs": args.epochs_con,
+                "batch_size": args.batch_size,
+                "base_lr": args.base_lr_contr,
+                "weight_decay": args.wd_contr,
+                "final_lr": args.final_lr,
+                "warmup_epochs": args.warmup_epochs,
+                "start_warmup": args.start_warmup,
+                "arch": args.arch,
+                "hidden_mlp": args.hidden_mlp,
+                "workers": args.workers,
+                "sync_bn": args.sync_bn,
+                "nmb_cmeans_iters": args.nmb_cmeans_iters,
+                "freeze": args.freeze,
+                "triplet": args.triplet
+            })
+        wandb.watch(model, log="all")
+
     cudnn.benchmark = True
-#    with experiment.train():
     for epoch in range(start_epoch, args.epochs_con):
 
         # train the network for one epoch
@@ -306,12 +292,16 @@ def main():
         )
         training_stats.update(scores)
         logger.info(f"Loss avg {scores[1]} for epoch {scores[0]}")
-#       experiment.log_metric("loss", scores[1], step=scores[0])
             
-        validate_contrastive(local_memory_embeddings, None, epoch, args)
+        validate_contrastive(local_memory_embeddings, local_memory_membership, args)
 
         # save checkpoints
         if args.rank == 0:
+            wandb.log({
+                "loss": scores[1],
+                "learning_rate": optimizer_contr.optim.param_groups[0]["lr"],
+            })
+            
             save_dict = {
                     "epoch": epoch + 1,
                     "state_dict": model.state_dict(),
@@ -364,44 +354,35 @@ def main():
     )
     start_epoch = to_restore["epoch"]
     
-#    if args.rank == 0:
-#        experiment = OfflineExperiment(
-#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-#            project_name="fuzzydeepcluster",
-#            workspace="wolodja",
-#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
-#            auto_output_logging="simple"
-#        )
-#    else:
-#        experiment = OfflineExperiment(
-#            api_key="ceYg4Xql1HqeiIsYQJtBJuECo",
-#            project_name="fuzzydeepcluster",
-#            workspace="wolodja",
-#            offline_directory="/cgtvx/FuzzyDeepCluster/experiments",
-#            disabled=True
-#        )
-#    
-#    experiment.add_tag("Head training")
-#    
-#    experiment.log_parameters({
-#        "nmb_crops": args.nmb_crops,
-#        "size_crops": args.size_crops,
-#        "min_scale_crops": args.min_scale_crops,
-#        "max_scale_crops": args.max_scale_crops,
-#        "crops_for_assign": args.crops_for_assign,
-#        "feat_dim": args.feat_dim,
-#        "epochs": args.epochs,
-#        "batch_size": args.batch_size,
-#        "base_lr": args.base_lr,
-#        "weight_decay": args.wd,
-#        "arch": args.arch,
-#        "hidden_mlp": args.hidden_mlp,
-#        "workers": args.workers,
-#        "sync_bn": args.sync_bn,
-#        "temperature": args.temperature,
-#        "nmb_prototypes": args.nmb_prototypes
-#    })
-#    with experiment.train():
+    if args.rank == 0:
+        wandb.login(key="")
+        wandb.init(
+            project="my-test-project",
+            name=f"head_training_prosed", 
+            config={
+                "nmb_crops": args.nmb_crops,
+                "size_crops": args.size_crops,
+                "min_scale_crops": args.min_scale_crops,
+                "max_scale_crops": args.max_scale_crops,
+                "crops_for_assign": args.crops_for_assign,
+                "feat_dim": args.feat_dim,
+                "percent_worst": args.percent_worst,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "base_lr": args.base_lr_contr,
+                "weight_decay": args.wd_contr,
+                "final_lr": args.final_lr,
+                "warmup_epochs": args.warmup_epochs,
+                "start_warmup": args.start_warmup,
+                "arch": args.arch,
+                "hidden_mlp": args.hidden_mlp,
+                "workers": args.workers,
+                "sync_bn": args.sync_bn,
+                "nmb_cmeans_iters": args.nmb_cmeans_iters,
+                "freeze": args.freeze
+            })
+        wandb.watch(model, log="all")
+
     for epoch in range(start_epoch, args.epochs):
         # train the network for one epoch
         logger.info("============ Starting head train epoch %i ... ============" % epoch)
@@ -423,6 +404,7 @@ def main():
 
         # save checkpoints
         if args.rank == 0:
+            wandb.log({"loss": scores[1]})
             save_dict = {
                     "epoch": epoch + 1,
                     "state_dict": model.state_dict()
@@ -515,13 +497,22 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
             
     return (epoch, losses.avg)
 
-def validate_contrastive(embedings, experiment, step, args):
+def validate_contrastive(embedings, membership, args):
     reducer = umap.UMAP(n_components=2)
+    clusters = torch.argmax(membership, dim=2).detach().cpu().numpy()
     for i in range(len(args.crops_for_assign)):
         uembedings = reducer.fit_transform(embedings[i].detach().cpu().numpy())
-        plt.scatter(uembedings[:,0], uembedings[:,1], cmap="Spectral")
-        #experiment.log_figure(figure=plt, figure_name=f"UMAP contrastvie for crop={i}", step=step)
-        plt.clf()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter3d(
+                x=uembedings[:,0], 
+                y=uembedings[:,1], 
+                z=uembedings[:,2], 
+                name=clusters[i],
+                mode='markers',
+                marker_color='rgba(152, 0, 0, .8)'
+        ))
+        fig.update_layout(margin=dict(l=0, r=0, b=0, t=0))
+        wandb.log({f"UMAP_crop_{i}": fig})
 
 def init_memory(dataloader, model):
     size_memory_per_process = len(dataloader.dataset)
