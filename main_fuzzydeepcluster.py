@@ -601,7 +601,7 @@ def triplet_each(local_memory_membership, local_memory_embeddings, emb, start_id
     for i, crop_idx in enumerate(args.crops_for_assign):
         emb_crop = emb[crop_idx * bs : (crop_idx + 1) * bs]
         distances = pairwise_distances(emb_crop)
-        indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1])
+        indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1]))
         lmemory_membership = local_memory_membership[i, start_idx : start_idx + emb_crop.shape[0]]
         classes_ind = torch.argmax(lmemory_membership, dim=1)
         keep = []
@@ -644,7 +644,7 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
     classes_ind = torch.argmax(lmemory_membership, dim=2)
     keep = []
     for em_idx in range(len(emb)):
-        if em_idx > len(emb)/len(args.crops_for_assign):
+        if em_idx >= len(emb)/len(args.crops_for_assign):
             crope = 1
             mem_idx = em_idx - int(len(emb)/len(args.crops_for_assign))
         else:
@@ -658,7 +658,7 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
         postive_idx = torch.argmax(distances[em_idx, same_classes_whole])
         
         not_same_classes = (classes_ind[crope] != em_class).nonzero().reshape(-1)
-        not_same_classes_crop = not_same_classes_crop + int(len(emb)/len(args.crops_for_assign))
+        not_same_classes_crop = not_same_classes + int(len(emb)/len(args.crops_for_assign))
         not_same_classes_whole = torch.cat([not_same_classes, not_same_classes_crop], dim=0)
         
         numb = torch.mul(not_same_classes_whole.shape[0], percent_worst)
