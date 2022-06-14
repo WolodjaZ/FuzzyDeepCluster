@@ -223,7 +223,7 @@ def main():
         local_memory_index, local_memory_embeddings = init_memory(train_loader, model)
 
     if args.rank == 0:
-        wandb.login(key="")
+        wandb.login(key="976b2a271b5ec8862fb46ea4dd11943fa1a61c5d")
         wandb.init(
             project="my-test-project", 
             name=f"training_original", 
@@ -234,11 +234,10 @@ def main():
                 "max_scale_crops": args.max_scale_crops,
                 "crops_for_assign": args.crops_for_assign,
                 "feat_dim": args.feat_dim,
-                "percent_worst": args.percent_worst,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
-                "base_lr": args.base_lr_contr,
-                "weight_decay": args.wd_contr,
+                "base_lr": args.base_lr,
+                "weight_decay": args.wd,
                 "final_lr": args.final_lr,
                 "warmup_epochs": args.warmup_epochs,
                 "start_warmup": args.start_warmup,
@@ -292,7 +291,8 @@ def main():
                 )
         torch.save({"local_memory_embeddings": local_memory_embeddings,
                     "local_memory_index": local_memory_index}, mb_path)
-
+    if args.rank == 0:
+        wandb.finish()
 
 def train(loader, model, optimizer, epoch, schedule, local_memory_index, local_memory_embeddings):
     batch_time = AverageMeter()

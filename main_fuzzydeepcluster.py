@@ -16,6 +16,7 @@ import time
 from logging import getLogger
 import wandb
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -25,7 +26,7 @@ import torch.optim
 import apex
 from apex.parallel.LARC import LARC
 from scipy.sparse import csr_matrix
-import plotly.graph_objects as go
+import plotly.express as px
 
 from src.utils import (
     bool_flag,
@@ -240,7 +241,7 @@ def main():
 
     # Create an experiment with your api key
     if args.rank == 0:
-        wandb.login(key="")
+        wandb.login(key="976b2a271b5ec8862fb46ea4dd11943fa1a61c5d")
         wandb.init(
             project="my-test-project",
             name=f"backbone_training_prosed", 
@@ -293,10 +294,9 @@ def main():
         training_stats.update(scores)
         logger.info(f"Loss avg {scores[1]} for epoch {scores[0]}")
             
-        validate_contrastive(local_memory_embeddings, local_memory_membership, args)
-
         # save checkpoints
         if args.rank == 0:
+            validate_contrastive(local_memory_embeddings, local_memory_membership, args)
             wandb.log({
                 "loss": scores[1],
                 "learning_rate": optimizer_contr.optim.param_groups[0]["lr"],
@@ -319,7 +319,8 @@ def main():
         torch.save({"local_memory_embeddings": local_memory_embeddings,
                         "local_memory_membership": local_memory_membership}, mb_path)
     
-    #TODO add visualization of embedings with classes
+    if args.rank == 0:
+        wandb.finish()
     # add head
     model.module.add_prototypes(args.nmb_prototypes)
     if args.freeze:
@@ -355,7 +356,6 @@ def main():
     start_epoch = to_restore["epoch"]
     
     if args.rank == 0:
-        wandb.login(key="")
         wandb.init(
             project="my-test-project",
             name=f"head_training_prosed", 
@@ -365,12 +365,10 @@ def main():
                 "min_scale_crops": args.min_scale_crops,
                 "max_scale_crops": args.max_scale_crops,
                 "crops_for_assign": args.crops_for_assign,
-                "feat_dim": args.feat_dim,
-                "percent_worst": args.percent_worst,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
-                "base_lr": args.base_lr_contr,
-                "weight_decay": args.wd_contr,
+                "base_lr": args.base_lr,
+                "weight_decay": args.wd,
                 "final_lr": args.final_lr,
                 "warmup_epochs": args.warmup_epochs,
                 "start_warmup": args.start_warmup,
@@ -418,6 +416,8 @@ def main():
                         os.path.join(args.dump_path, "checkpoint_final.pth.tar"),
                         os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
                 )
+    if args.rank == 0:
+        wandb.finish()
 
 def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embeddings, local_memory_membership, nmb_cmeans_iters=30, percent_worst=0.2):
     model.train()
@@ -498,20 +498,17 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
     return (epoch, losses.avg)
 
 def validate_contrastive(embedings, membership, args):
-    reducer = umap.UMAP(n_components=2)
+    reducer = umap.UMAP(n_components=3)
     clusters = torch.argmax(membership, dim=2).detach().cpu().numpy()
     for i in range(len(args.crops_for_assign)):
         uembedings = reducer.fit_transform(embedings[i].detach().cpu().numpy())
-        fig = go.Figure()
-        fig.add_trace(go.Scatter3d(
-                x=uembedings[:,0], 
-                y=uembedings[:,1], 
-                z=uembedings[:,2], 
-                name=clusters[i],
-                mode='markers',
-                marker_color='rgba(152, 0, 0, .8)'
-        ))
-        fig.update_layout(margin=dict(l=0, r=0, b=0, t=0))
+        pdas = pd.DataFrame({
+            'x' : uembedings[:,0],
+            'y' : uembedings[:,1],
+            'z' : uembedings[:,2],
+            'label' : clusters[i]
+        })
+        fig = px.scatter_3d(pdas, x='x', y='y', z='z', color='label')
         wandb.log({f"UMAP_crop_{i}": fig})
 
 def init_memory(dataloader, model):
@@ -660,9 +657,9 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
         elif not_same_classes_whole.shape[0] < 2:
             lowest_classes_idx = not_same_classes
         elif numb < 2:
-            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes,em_class], 2)[1]
+            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes_whole, em_class], 2)[1]
         else:
-            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes,em_class], numb)[1]
+            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes_whole, em_class], numb)[1]
         negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
                 
         keep.append(em_idx)
