@@ -10,6 +10,7 @@ import os
 import time
 from logging import getLogger
 
+import wandb
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -73,6 +74,8 @@ parser.add_argument("--decay_epochs", type=int, nargs="+", default=[60, 80],
 parser.add_argument("--gamma", type=float, default=0.1, help="decay factor")
 # for cosine learning rate schedule
 parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
+parser.add_argument("--method", type=str, default="original", help="Type of model to validate")
+parser.add_argument("--dataset", type=str, default="cifat10", help="Type of model to validate")
 
 #########################
 #### dist parameters ###
@@ -98,23 +101,55 @@ def main():
     )
 
     # build data
-    train_dataset = datasets.ImageFolder(os.path.join(args.data_path, "train"))
-    val_dataset = datasets.ImageFolder(os.path.join(args.data_path, "val"))
     tr_normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.228, 0.224, 0.225]
     )
-    train_dataset.transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        tr_normalize,
-    ])
-    val_dataset.transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        tr_normalize,
-    ])
+    if args.dataset == "imagenet": 
+        train_dataset = datasets.ImageFolder(os.path.join(args.data_path, "train"))
+        val_dataset = datasets.ImageFolder(os.path.join(args.data_path, "val"))
+        train_dataset.transform = transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+        val_dataset.transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+    elif args.dataset == "cifar10": 
+        train_dataset = datasets.CIFAR10(root=args.data_path, train=True)
+        val_dataset = datasets.CIFAR10(root=args.data_path, train=False)
+        train_dataset.transform = transforms.Compose([
+            transforms.RandomResizedCrop(32),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+        val_dataset.transform = transforms.Compose([
+            transforms.Resize(32),
+            transforms.CenterCrop(32),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+    elif args.dataset == "cifar100": 
+        train_dataset = datasets.CIFAR100(root=args.data_path, train=True)
+        val_dataset = datasets.CIFAR100(root=args.data_path, train=False)
+        train_dataset.transform = transforms.Compose([
+            transforms.RandomResizedCrop(32),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+        val_dataset.transform = transforms.Compose([
+            transforms.Resize(32),
+            transforms.CenterCrop(32),
+            transforms.ToTensor(),
+            tr_normalize,
+        ])
+
     sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -198,6 +233,31 @@ def main():
     best_acc = to_restore["best_acc"]
     cudnn.benchmark = True
 
+    if args.rank == 0:
+        wandb.login(key="976b2a271b5ec8862fb46ea4dd11943fa1a61c5d")
+        wandb.init(
+            project="my-test-project",
+            name=f"validation_{args.method}",
+            config={
+                "arch": args.arch,
+                "pretrained": args.pretrained,
+                "dump_path": args.dump_path,
+                "data_path": args.data_path,
+                "workers": args.workers,
+                "global_pooling": args.global_pooling,
+                "use_bn": args.use_bn,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "lr": args.lr,
+                "wd": args.wd,
+                "nesterov": args.nesterov,
+                "scheduler_type": args.scheduler_type,
+                "decay_epochs": args.decay_epochs,
+                "gamma": args.gamma,
+                "final_lr": args.final_lr,
+                "dataset": args.dataset
+            })
+        wandb.watch(model, log="all")
     for epoch in range(start_epoch, args.epochs):
 
         # train the network for one epoch
@@ -214,6 +274,14 @@ def main():
 
         # save checkpoint
         if args.rank == 0:
+            wandb.log({
+                "loss": scores[1],
+                "top1": scores[2],
+                "top5": scores[3],
+                "validate_loss": scores_val[0],
+                "validate_top1": scores_val[1],
+                "validate_top5": scores_val[2],
+            })
             save_dict = {
                 "epoch": epoch + 1,
                 "state_dict": linear_classifier.state_dict(),
