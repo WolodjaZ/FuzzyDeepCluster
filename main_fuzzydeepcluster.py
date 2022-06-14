@@ -483,7 +483,7 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
         loss = 0
         for h in range(len(args.nmb_prototypes)):
             scores = output[h] / args.temperature
-            targets = assignments[h,idx].repeat(sum(args.nmb_crops)).cuda()#(non_blocking=True)
+            targets = assignments[h,idx].repeat(sum(args.nmb_crops)).cuda(non_blocking=True)
             loss += cross_entropy(scores, targets)
         loss /= len(args.nmb_prototypes)
         optimizer.zero_grad()
