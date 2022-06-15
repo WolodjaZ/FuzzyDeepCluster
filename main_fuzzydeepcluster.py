@@ -12,6 +12,7 @@ import umap
 import os
 import shutil
 import time
+import sys
 
 from logging import getLogger
 import wandb
@@ -73,7 +74,7 @@ parser.add_argument("--nmb_prototypes", default=[3000, 3000, 3000], type=int, na
                     help="number of prototypes - it can be multihead")
 parser.add_argument("--percent_worst", default=0.1, type=int, nargs="+",
                     help="Percentage of worst not classes for negative sampling to take into considereation")
-parser.add_argument("--nmb_cmeans_iters", default=2, type=int,
+parser.add_argument("--nmb_cmeans_iters", default=10, type=int,
                     help="Numbers of etaration of cmeans")
 
 parser.add_argument("--fuzzy_param", default=2.0, type=float,
@@ -238,7 +239,7 @@ def main():
         local_memory_membership = mb_ckp["local_memory_membership"]
     else:
         local_memory_embeddings, local_memory_membership = init_memory(train_loader, model)
-
+    
     # Create an experiment with your api key
     if args.rank == 0:
         wandb.login(key="976b2a271b5ec8862fb46ea4dd11943fa1a61c5d")
@@ -397,7 +398,6 @@ def main():
                 local_memory_membership
         )
         training_stats.update(scores)
-        #experiment.log_metric("loss", scores[1], step=scores[0])
         logger.info(f"Loss {scores[1]} for epoch {scores[0]}")
 
         # save checkpoints
@@ -425,8 +425,7 @@ def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embed
 
     local_memory_membership = cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_iters)
     logger.info('Clustering for epoch {} done.'.format(epoch))
-
-    start_idx = 0
+    
     for it, (idx, inputs) in enumerate(loader):
         # update learning rate
         iteration = epoch * len(loader) + it
@@ -440,15 +439,14 @@ def train_backbone(loader, model, optimizer, epoch, schedule, local_memory_embed
         # ============ Triplet loss ... ============
         # order embd based on fuzzy clustering with centroids
         if args.triplet == 0:
-            loss = triplet_each(local_memory_membership, local_memory_embeddings, emb, start_idx, bs, percent_worst)
+            loss = triplet_each(local_memory_membership[:,idx], local_memory_embeddings[:,idx], emb, bs,  percent_worst)
         else:
-            loss = triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx, bs, percent_worst)
+            loss = triplet_all(local_memory_membership[:,idx], local_memory_embeddings[:,idx], emb, bs, percent_worst)
             
         if loss != 0 and not torch.isnan(loss).any():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        start_idx += bs
 
         # ============ misc ... ============
         losses.update(loss.item(), inputs[0].size(0))
@@ -472,7 +470,6 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
     else:
         assignments = assignments_to_assign
     
-    start_idx = 0
     for it, (idx, inputs) in enumerate(loader):            
          # ============ multi-res forward passes ... ============
         optimizer.zero_grad()
@@ -489,7 +486,6 @@ def train_head(loader, optimizer, model, epoch, local_memory_membership):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        start_idx += bs
         
         losses.update(loss.item(), inputs[0].size(0))
         if args.rank ==0 and it % 50 == 0:
@@ -513,91 +509,94 @@ def validate_contrastive(embedings, membership, args):
 
 def init_memory(dataloader, model):
     size_memory_per_process = len(dataloader.dataset)
-    local_memory_embeddings = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.feat_dim).cuda()
-    local_memory_membership = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.nmb_prototypes[0]).float().cuda()
-    start_idx = 0
+    local_memory_embeddings = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.feat_dim).float()
+    local_memory_membership = torch.zeros(len(args.crops_for_assign), size_memory_per_process, args.nmb_prototypes[0]).float()
     with torch.no_grad():
         logger.info('Start initializing the memory banks')
         for index, inputs in dataloader:
             nmb_unique_idx = inputs[0].size(0)
-            index = index.cuda(non_blocking=True)
             
             # get embeddings
             outputs = []
-            for crop_idx in args.crops_for_assign:
-                inp = inputs[crop_idx].cuda(non_blocking=True)
-                outputs.append(model(inp))
+            emb = model(inputs).detach().cpu()
             
              # fill the memory bank
-            for mb_idx, embeddings in enumerate(outputs):
-                local_memory_embeddings[mb_idx][
-                    start_idx : start_idx + nmb_unique_idx
-                ] = embeddings
+            for i, crop_idx in enumerate(args.crops_for_assign):
+                local_memory_embeddings[i, index] = emb[crop_idx *  nmb_unique_idx: (crop_idx + 1) * nmb_unique_idx]
 
                 random_num_list = torch.rand((nmb_unique_idx, args.nmb_prototypes[0])).float()
                 summation = random_num_list.sum(dim=1)
                 temp_list = torch.zeros_like(random_num_list)
                 for a in range(random_num_list.shape[0]):
                     temp_list[a] = torch.div(random_num_list[a], summation[a])
-                local_memory_membership[mb_idx, start_idx : start_idx + nmb_unique_idx] = temp_list
-            start_idx += nmb_unique_idx
+                local_memory_membership[i, index] = temp_list
     logger.info('Initializion of the memory banks done.')
     return local_memory_embeddings, local_memory_membership
 
 
 def cluster_memory(local_memory_membership, local_memory_embeddings, nmb_cmeans_iters=100):
     j = 0
-    #print(local_memory_embeddings)
     with torch.no_grad():
         for i_K, K in enumerate(args.nmb_prototypes):
+            #print(f"Number of prototypes {i_K} amount {K} memory bank {j}")
             for z in range(nmb_cmeans_iters): #TODO bigger values than kmeans
                 #calculating the cluster center, is done in every iteration
-                centroid_mem_val = local_memory_membership[j,:]
-                cluster_centers = torch.zeros(K, args.feat_dim).float().cuda()
+                centroid_mem_val = local_memory_membership[j]
+                cluster_centers = torch.zeros(K, args.feat_dim).float()
                 for k in range(K):
                     x = centroid_mem_val[:,k]
                     xraised = torch.pow(x, args.fuzzy_param)
-                    denominator = torch.sum(xraised).cuda()
+                    denominator = torch.sum(xraised)
                     temp_num = torch.zeros(x.shape[0], args.feat_dim).float()
                     for i in range(x.shape[0]):
                         data_point = local_memory_embeddings[j,i]
                         temp_num[i] = torch.mul(data_point, xraised[i])
                     
-                    numerator = temp_num.sum(dim=0).cuda()
+                    numerator = temp_num.sum(dim=0)
                     cluster_centers[k] = torch.div(numerator, denominator)
                 #print(f"Clusters {i_K} {z} {cluster_centers}")
                 
                 # updating the membership values using the cluster centers
-                p = torch.tensor(float(2/(args.fuzzy_param-1))).cuda()
+                p = torch.tensor(float(2/(args.fuzzy_param-1)))
                 for i in range(local_memory_embeddings.shape[1]):
                     x = local_memory_embeddings[j,i]
                     distances = x.sub(cluster_centers)
                     distances = torch.linalg.norm(distances, dim=1)
                     for g in range(K):
-                        den = torch.pow(torch.div(distances[g],distances), p)
+                        den = torch.zeros((K)).float()
+                        for l in range(K):
+                            if distances[l] == 0:
+                                divider = 0.1e-9
+                            else:
+                                divider = distances[l]
+                            den[l] = torch.pow(distances[g]/divider, p)
+                        
                         den_sum = torch.sum(den)
-                        local_memory_membership[j,i,g] = torch.div(torch.tensor(1.), den_sum)
+                        if den_sum == 0:
+                            local_memory_membership[j,i,g] = torch.div(torch.tensor(1.),torch.tensor(1.))
+                        else:
+                            local_memory_membership[j,i,g] = torch.div(torch.tensor(1.), den_sum)
                 #print(f"Memberhsip {i_K} {z} {local_memory_membership[j,i]}")
             # next memory bank to use
             j = (j + 1) % len(args.crops_for_assign)
         
         return local_memory_membership
 
-def triplet_each(local_memory_membership, local_memory_embeddings, emb, start_idx, bs, percent_worst):
+def triplet_each(local_memory_membership, local_memory_embeddings, emb, bs, percent_worst):
     triplet_loss = torch.nn.TripletMarginLoss(margin=1.0, p=2.0)
     loss = 0
     for i, crop_idx in enumerate(args.crops_for_assign):
         emb_crop = emb[crop_idx * bs : (crop_idx + 1) * bs]
         distances = pairwise_distances(emb_crop)
         indices_tuple = torch.zeros((3, emb_crop.shape[0], emb_crop.shape[1]))
-        lmemory_membership = local_memory_membership[i, start_idx : start_idx + emb_crop.shape[0]]
+        lmemory_membership = local_memory_membership[i]
         classes_ind = torch.argmax(lmemory_membership, dim=1)
         keep = []
         for em_idx in range(len(emb_crop)):
             em_class = classes_ind[em_idx]
-            same_classes = (classes_ind == em_class).nonzero().reshape(-1)
+            same_classes = torch.nonzero((classes_ind == em_class)).reshape(-1)
             postive_idx = torch.argmax(distances[em_idx, same_classes])
-            not_same_classes = (classes_ind != em_class).nonzero().reshape(-1)
+            not_same_classes = torch.nonzero((classes_ind != em_class)).reshape(-1)
             numb = torch.mul(not_same_classes.shape[0], percent_worst)
             numb = numb.long()
             if same_classes.shape[0] == 0 or not_same_classes.shape[0] == 0:
@@ -619,17 +618,16 @@ def triplet_each(local_memory_membership, local_memory_embeddings, emb, start_id
         
         # ============ update memory banks ... ============
         embe = emb.detach()
-        local_memory_embeddings[i, start_idx : start_idx + bs] = embe[crop_idx * bs : (crop_idx + 1) * bs]
+        local_memory_embeddings[i] = embe[crop_idx * bs : (crop_idx + 1) * bs]
         
     loss /= len(args.crops_for_assign)
     return loss
 
-def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx, bs, percent_worst):
+def triplet_all(local_memory_membership, local_memory_embeddings, emb, bs, percent_worst):
     triplet_loss = torch.nn.TripletMarginLoss(margin=1.0, p=2.0)
     distances = pairwise_distances(emb)
     indices_tuple = torch.zeros((3, emb.shape[0], emb.shape[1]))
-    lmemory_membership = local_memory_membership[:, start_idx : start_idx + int(len(emb)/len(args.crops_for_assign))]
-    classes_ind = torch.argmax(lmemory_membership, dim=2)
+    classes_ind = torch.argmax(local_memory_membership, dim=2)
     keep = []
     for em_idx in range(len(emb)):
         if em_idx >= len(emb)/len(args.crops_for_assign):
@@ -640,12 +638,12 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
             mem_idx = em_idx
             
         em_class = classes_ind[crope, mem_idx]
-        same_classes = (classes_ind[crope] == em_class).nonzero().reshape(-1)
+        same_classes = torch.nonzero((classes_ind[crope] == em_class)).reshape(-1)
         same_classes_crop = same_classes + int(len(emb)/len(args.crops_for_assign))
         same_classes_whole = torch.cat([same_classes, same_classes_crop], dim=0)
         postive_idx = torch.argmax(distances[em_idx, same_classes_whole])
         
-        not_same_classes = (classes_ind[crope] != em_class).nonzero().reshape(-1)
+        not_same_classes = torch.nonzero((classes_ind[crope] != em_class)).reshape(-1)
         not_same_classes_crop = not_same_classes + int(len(emb)/len(args.crops_for_assign))
         not_same_classes_whole = torch.cat([not_same_classes, not_same_classes_crop], dim=0)
         
@@ -657,9 +655,9 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
         elif not_same_classes_whole.shape[0] < 2:
             lowest_classes_idx = not_same_classes
         elif numb < 2:
-            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes_whole, em_class], 2)[1]
+            lowest_classes_idx = torch.topk(local_memory_membership.reshape(-1, local_memory_membership.shape[-1])[not_same_classes_whole, em_class], 2)[1]
         else:
-            lowest_classes_idx = torch.topk(lmemory_membership.reshape(-1, lmemory_membership.shape[-1])[not_same_classes_whole, em_class], numb)[1]
+            lowest_classes_idx = torch.topk(local_memory_membership.reshape(-1, local_memory_membership.shape[-1])[not_same_classes_whole, em_class], numb)[1]
         negative_idx = torch.argmin(distances[em_idx, lowest_classes_idx])
                 
         keep.append(em_idx)
@@ -671,7 +669,7 @@ def triplet_all(local_memory_membership, local_memory_embeddings, emb, start_idx
     # ============ update memory banks ... ============
     embe = emb.detach()
     for i, crop_idx in enumerate(args.crops_for_assign):
-        local_memory_embeddings[i, start_idx : start_idx + bs] = embe[crop_idx * bs : (crop_idx + 1) * bs]
+        local_memory_embeddings[i] = embe[crop_idx * bs : (crop_idx + 1) * bs]
 
     return loss
 
